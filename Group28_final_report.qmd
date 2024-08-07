@@ -1,0 +1,585 @@
+---
+title: "Predicting Album Popularity"
+subtitle: |
+  | Final Report
+  | Data Science 3 with R (STAT 301-3)
+
+author:
+  - name: Ayesha Mohammed
+  - name: Sana Nanlawala
+  - name: Julia Nelson
+date: 6/5/2024
+
+format:
+  html:
+    toc: true
+    toc-location: left
+    embed-resources: true
+    
+execute:
+  echo: false
+  warning: false
+
+from: markdown+emoji 
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon="false"}
+## [Final Project GitHub](https://github.com/stat301-3-2024-spring/final-project-3-group28.git)
+:::
+
+```{r}
+#| echo: false
+#| message: false
+
+# load packages
+library(tidyverse)
+library(tidymodels)
+library(naniar)
+library(knitr)
+library(here)
+
+# load data
+load(here("data/song_train.rda"))
+load(here("eda/cor_table.rda"))
+load(here("eda/album_counts.rda"))
+load(here("eda/artist_distrib.rda"))
+load(here("results/model_comparison.rda"))
+load(here("results/refined_model_analysis.rda"))
+load(here("results/final_metric.rda"))
+load(here("results/predictions_popularity.rda"))
+
+load(here("results/elastic_params.rda"))
+load(here("results/rf_params.rda"))
+load(here("results/bt_params.rda"))
+load(here("results/knn_params.rda"))
+load(here("results/nn_params.rda"))
+load(here("results/mars_params.rda"))
+load(here("results/svm_linear_params.rda"))
+load(here("results/mars_params_2.rda"))
+load(here("results/rf_params_2.rda"))
+```
+
+## Introduction
+
+Our objective is to predict the popularity of music albums based on their release date, artist, number of tracks, and characteristics of their tracks. Popularity is measured as an integer value from 1-100. The most popular albums have a score of 100, while the least popular albums have a score of 1. This is a regression problem.
+
+It can be difficult to understand why one album may become a huge hit while another may fade into obscurity, and therefore hard to predict which albums will become more popular than others. Album popularity is an essential issue for record labels, radio stations, streaming services, and musicians themselves. Albums with a better shot of attaining popularity may be worth more time, effort, and money than others. Therefore understanding what factors influence popularity and being able to predict popularity is important. Our model seeks to predict popularity based on known information about albums.
+
+The dataset we will use to build a predictive model was sourced from Spotify using its API service[^1]. Therefore the variable for the album's popularity refers specifically to each album's popularity on Spotify and not necessarily its popularity on other platforms such as radio stations, YouTube, and CDs. Our predictions can't therefore be applied to data from these other platforms. We accessed this dataset on Kaggle. The dataset is from 2021.
+
+[^1]: <https://www.kaggle.com/datasets/elemento/music-albums-popularity-prediction?select=train.csv>
+
+## Data Overview
+
+The dataset had 43 predictor variables and 160,000 observations. There were 37 numerical predictors, 5 categorical predictors, and 1 datetime predictor. The full list of predictor variables is included in [Appendix: List of Variables]. Approximately 55% of the observations were repeats, which we removed. The filtered dataset had 72,357 distinct observations.
+
+```{r}
+#| label: tbl-dist # label table
+#| tbl-cap: "Distribution of Popularity" # name table
+#| echo: false
+
+song_train |>
+  ggplot(aes(x = popularity)) +
+  geom_density()
+```
+
+@tbl-dist shows that the distribution of the album's popularity was skewed right, with most albums having scores below 50, fewer having scores between 50 and 75, and very few having scores between 75 and 100. Popularity had no missingness.
+
+The rest of the dataset had a lot of missingness, and as a result we ended up only using 19 of the 43 predictors. 24 of the 37 predictors had over 40% missingness, and we removed them from all of our models. These predictors were all representative of characteristics of the second or third tracks of the album. Not every album had more than one track, resulting in high levels of missingness for these predictors. All other predictors had less than 1% missingness. The percent missingness of each variable is included in [Appendix: Missingness].
+
+We also had to remove 4 of the 5 categorical predictors, representing the album name and the names of the first three tracks. Almost every album and song had a unique name, making these unhelpful predictors.
+
+We performed an exploratory data analysis on the data to determine the distributions of each of the predictor variables as well as their relationships to one another. The results of this EDA are included in [Appendix: EDA].
+
+## Methods
+
+This is a regression problem, and this model is predictive. As the dataset is derived randomly from the Spotify catalog, it's representative of the albums on Spotify as a whole. The model can be used to predict the popularity of any album on Spotify. However, as stated above, this model can't be extrapolated to data from other platforms since the data is specific to Spotify.
+
+#### Splitting Data
+
+We split the dataset using an 80/20 split. 80% of the data (57,884 observations) was used to train the model and the remaining 20% of the data (14,473 observations) was used to test the model. This ratio allows for both good predictive performance that can be generalized to the dataset and good assessment of model efficacy. We stratified the data by the outcome variable, popularity of albums, in order to ensure similar distributions of the album's popularity represented in the testing and training data.
+
+#### Resampling
+
+We performed resampling before fitting any models directly to the training data. Under resampling, the training data was itself divided into training and testing categories. The training subset was used to fit the model, while the testing subset was used to evaluate the model. We did this multiple times, so that the efficacy of each model could be more accurately determined than if the model had only been fit once. This helps to improve model accuracy, as well as prevent overfitting, where the model is fit too closely to the training data and can't be applied to new data as well.
+
+The resampling method we used was V-fold cross-validation. The training data was randomly split into 5 folds of similar size (around 11577 observations each). We once again stratified the data by the outcome variable, popularity of albums, so that similar proportions of each outcome were represented in each fold. A model was created using 4 of the 5 folds, and the remaining fold was used to test the model. This was done using each fold as the testing fold. The whole process was repeated 3 times, so a total of 15 models were trained and tested. The final performance metric averages the 15 replicates. Either 5 folds with 3 repetitions or 10 folds with 5 repetitions are commonly used, and we chose the former due to the size of the dataset, which increased model complexity and the time required to fit each model.
+
+We also randomly split the training data into a set of 3 folds with 1 repetition. We used this to train four of our models: linear support vector machine with both baseline and feature engineered recipes, random forest with the baseline recipe, and boosted tree with the baseline recipe. We did this because these models were incredibly time-consuming to run, and caused difficulties when we ran them with 5 folds with 3 repetitions.
+
+We chose V-fold cross-validation due to its advantages over other resampling methods. It isn't as time-consuming as leave-one-out cross-validation. Unlike Monte Carlo cross-validation, V-fold cross-validation creates mutually exclusive assessment sets.
+
+#### Assessment Metric
+
+The metric we used to compare models is **root mean squared error** (RMSE). RMSE measures the difference between the model's predicted values for the outcome variable and the actual values of the outcome variable. An RMSE of 0 indicates that the predicted values were the exact same as the actual values, and a lower RMSE value is better. The best models are those with the lowest RMSE.
+
+## Initial Model Building & Selection Results
+
+#### Types of Models
+
+We fit nine different types of models to the folds: null, linear regression, elastic net, random forest, boosted tree, k nearest neighbor, single layer neural network, multivariate adaptive regression splines (MARS), and linear support vector machines (SVM). We also created a tenth model, an ensemble model composed of the random forest, MARS, and neural network models.
+
+The **null** model is the simplest possible model. It's uninformative and doesn't have any main arguments. It serves as our baseline model, with which all other models will be compared to put their efficacy into context and determine if developing complex models was worthwhile. The null model has no parameters. We trained one null model 15 times, for a total of 15 trainings.
+
+The **linear regression** model is a supervised, parametric model that creates a coefficient for each predictor, which takes the form of either a slope or an intercept. The coefficients are used to create a linear equation to determine the value of the outcome variable. This model doesn't have any parameters. We trained two linear regression models 15 times, for a total of 30 trainings.
+
+The **elastic net** model is a parametric model that is a combination of two other models, the fused ridge and fused lasso models. It has two parameters: a penalty value that selects the most important features and prevents the model from being overfit, and a mixture value that determines what proportion of the model will be ridge and what proportion will be lasso. We tuned the penalty value to be explored over 5 levels from 10^-10^ to 1, and the mixture value to be explored over 5 levels from 0 to 1 (0% ridge to 100% ridge). We trained 50 elastic net models 15 times, for a total of 375 trainings.
+
+The **random forest** model is a tree-based, non-parametric model that progressively segments the training data into simpler regions, like the branches of a tree. The predicted value of the outcome variable is based on its position in the tree. The random forest model has three parameters: the number of predictors randomly sampled at each split, the number of trees to be averaged for the final prediction, and the minimum number of data points required for the tree to be split further. We set the number of trees to 1000. We tuned the number of predictors to be explored over 3 levels from 1 to 1000 (or the maximum number of predictors), and the minimum number of data points to be explored over 3 levels from 2 to 40. We trained 9 random forest models 15 times and 9 random forest models 3 times, for a total of 162 trainings.
+
+The **boosted tree** model is a tree-based, non-parametric model that combines multiple sequential trees into a stronger model, where the newer trees are trained on the older trees. This model has four parameters: the same three as the random forest model, as well as the learning rate, which measures the level of influence of each new tree. A value of 0 indicates no influence, while 1 indicates a great deal of influence. We set the number of trees to 500. We set the number of predictors to 7 for the feature engineered model, and tuned it to be explored over 5 levels from 5 to 25 for the baseline model. We tuned the minimum number of data points to be explored over 5 levels from 1 to 40 and the learning rate to be explored over 5 levels from .01 to .3. We trained 25 boosted tree models 15 times and 125 boosted tree models 3 times, for a total of 750 trainings.
+
+The **k nearest neighbor** model is a tree-based model which finds the "closest" (most similar) training data points to a new data point and predicts the value of the new data point based on those points. This model has one parameter, the number of closest data points, or neighbors, to be considered. We tuned the number of neighbors to be explored over 5 levels from 5 to 25. We trained 10 k nearest neighbor models 15 times, for a total of 150 trainings.
+
+The **single-layer neural network** is a machine learning technique that trains the computer to emulate human thought process and "learn by example." The input data are interpreted as nodes, which together form the input layer. A weighted function is applied to the input layer, generating a weighted sum, which is then used to create predictions. This model has two parameters: the number of hidden units in each layer, and the penalty, or amount of regularization. We tuned the number of hidden units and the penalty to be explored over 50 combinations. The number of hidden units was explored over levels from 1 to 10, and the penalty was explored over levels from 1.03 \* 10^-10^ to .65. We trained 100 single-layer neural network models 15 times, for a total of 1500 trainings.
+
+**Multivariate adaptive regression splines** (MARS) is a non-parametric regression model where the predictor space is partitioned into multiple regions using basis functions. Each region can be described by a linear model. This model has two parameters: the number of features retained and the highest possible interaction degree. We tuned the number of features retained to be explored over 24 levels from 2 to 25, and the highest interaction degree to be explored over 2 levels from 1 to 2. We trained 48 MARS models 15 times, for a total of 720 trainings.
+
+**Linear support vector machines** (SVM) is a supervised model where a hyperplane in an N-dimensional space is chosen that divides data points into distinct groups. Predictions are based off of locations within the hyperplane. This model has one parameter: cost, or the penalty for misclassification. We tuned cost to be explored over 10 levels from 10^-3^ to 28.7 for the baseline model and over 5 levels from 3 \* 10^-3^ to 5.7 for the feature engineered model. We trained 15 linear SVMs 3 times, for a total of 45 trainings. We performed relatively few trainings because of extremely long runtimes for linear SVMs.
+
+#### Recipes
+
+We created four recipes in total: a baseline recipe for the parametric models, a baseline recipe for the tree-based models, a feature engineered recipe for the parametric models, and a feature engineered recipe for the tree-based models.
+
+We first fit each model to a baseline recipe. This recipe contains only the basic steps required for a prediction to be produced:
+
+-   Removal of all numeric predictors with excessive missingness and categorical predictors with too many unique values (discussed in [Appendix: Missingness])
+
+-   Imputation of the remaining categorical predictor of artists' names missing values using its mode
+
+-   Imputation of numeric predictors' missing values using their means
+
+-   Conversion of rare values of artists' names to a category of other
+
+-   Transformation of artists' names and the datetime predictor for the release date to numerical predictors
+
+-   Removal of all predictors with zero variance
+
+-   Normalization of all predictors
+
+Each model was then fit to a feature engineered recipe, except for the null model, which as the baseline model was only fit to the baseline recipe. We kept most of the steps from the baseline recipe.
+
+The rest of the steps differed from the baseline recipe:
+
+-   Imputation of missing values of all variables based on the 5 nearest neighbors instead of mean & mode
+
+-   Transformation of release date into a new variable for release month
+
+-   log10-transformations of four variables (number of tracks, duration, the amount of words, & audience) to better resemble a Gaussian distribution
+
+-   Yeo-Johnson-transformations of three variables (acoustics, instrumentalness, & valence) to adjust for abnormal distributions
+
+-   Natural spline-transformations of three variables (key, audience, & tempo) to adjust for abnormal distributions
+
+-   Lowering of the threshold for converting artist names to an "other" category to preserve more unique levels
+
+There is one difference between the recipes for the parametric and tree-based models. The former split categorical predictors with n categories into n-1 numeric variables, while the latter split categorical predictors with n categories into n numeric variables. This was the case for both the baseline and feature engineered recipes.
+
+#### Initial Results & Model Analysis
+
+```{r}
+#| label: tbl-elastic # label table
+#| tbl-cap: "Best Tuning Parameters for Elastic Net Model" # name table
+#| echo: false
+
+elastic_best |> kable()
+```
+
+@tbl-elastic shows the best tuning parameters for the elastic net model. The best baseline model had a penalty of 10^-10^ and a mixture of .25, while the best feature engineered model had a penalty 10^-10^ and a mixture of 1.00. It seems that the most effective elastic net models have a low penalty, while the mixture isn't particularly important. Further tuning could explore lower penalties with a variety of mixtures to find optimal parameter values.
+
+```{r}
+#| label: tbl-rf # label table
+#| tbl-cap: "Best Tuning Parameters for Random Forest Model" # name table
+#| echo: false
+
+rf_best |> kable()
+```
+
+@tbl-rf shows the best tuning parameters for the random forest model. The best baseline model had 2 predictors sampled at each split and a minimum of 2 data points for the tree to be split further. The best feature engineered model had 1000 (all) predictors sampled at each split and a minimum of 2 data points for the tree to be split further. It seems that the most effective random forest models have a low minimum number of data points, while the number of predictors isn't as important. Further tuning could explore lower minimum numbers of data points with a variety of numbers of predictors to find optimal parameter values.
+
+```{r}
+#| label: tbl-bt # label table
+#| tbl-cap: "Best Tuning Parameters for Boosted Tree Model" # name table
+#| echo: false
+
+bt_best |> kable()
+```
+
+@tbl-bt shows the best tuning parameters for the boosted tree model. The best baseline model had 8 predictors sampled at each split, a minimum of 6 data points for the tree to be split further, and a learn rate of 1.06. The best feature engineered model had 7 predictors sampled at each split, a minimum of 40 data points for the tree to be split further, and a learn rate of 1.023. It seems that the most effective boosted tree models have a learn rate around 1, while the number of predictors sampled is around 7-8 and minimum data points aren't as important. Further tuning could set the number of predictors and the learn rate, and explore a variety of minimum numbers of data points to find optimal parameter values.
+
+```{r}
+#| label: tbl-knn # label table
+#| tbl-cap: "Best Tuning Parameters for K Nearest Neighbor Model" # name table
+#| echo: false
+
+knn_best |> kable()
+```
+
+@tbl-knn shows the best tuning parameters for the k nearest neighbor model. Both the best baseline model and the best feature engineered model used 25 closest neighbors. For this analysis, the most effective k nearest neighbor models are those that consider more neighbors. Further tuning could increase the number of closest neighbors to find an optimal parameter value.
+
+```{r}
+#| label: tbl-nn # label table
+#| tbl-cap: "Best Tuning Parameters for Neural Network Model" # name table
+#| echo: false
+
+nn_best |> kable()
+```
+
+@tbl-nn shows the best tuning parameters for the neural network model. Both the best baseline model and the best feature engineered model used 10 hidden units, but their penalties differed. Further tuning could set hidden units to 10 and explore a variety of penalties to find optimal parameter values.
+
+```{r}
+#| label: tbl-mars # label table
+#| tbl-cap: "Best Tuning Parameters for MARS" # name table
+#| echo: false
+
+mars_best |> kable()
+```
+
+@tbl-mars shows the best tuning parameters for the MARS. Both the best baseline model and the best feature engineered model used 25 features retained and an interaction degree of 2. Further tuning could increase both of these parameters to find optimal parameter values.
+
+```{r}
+#| label: tbl-svm # label table
+#| tbl-cap: "Best Tuning Parameters for Linear SVM" # name table
+#| echo: false
+
+svm_linear_best |> kable()
+```
+
+@tbl-svm shows the best tuning parameters for the linear SVM. The best baseline model and the best feature engineered model used costs between .01 and .2. Further tuning could explore costs between these two values to find optimal parameter values.
+
+#### Model Comparison
+
+```{r}
+#| label: tbl-comp # label table
+#| tbl-cap: "RMSE of Each Model" # name table
+#| echo: false
+
+model_comparison_rm_popularity |> kable()
+```
+
+@tbl-comp ranks each model we produced based on RMSE. Of the individual models, the random forest, neural network, and MARS models had the lowest RMSE values. The random forest model was the only model to have an RMSE below 17, with an RMSE of 16.64 with the baseline recipe and an RMSE of 16.80 for the feature engineered recipe. All of the other models had RMSE values between 17 and 18, except for the baseline boosted tree model, which had a surprisingly low RMSE of 22.42. The RMSE of the null model was 18.40, so each other model was better than the null model but not by a large margin. RMSE was similar for the baseline and feature engineered versions of each model.
+
+We selected the feature engineered random forest, neural network, and MARS models to compose an ensemble model to optimize RMSE. The ensemble model was created using 135 random forest models, 750 neural network models, and 360 MARS, for a total of 1245 models. 8 of these models - 3 random forest models and 5 neural network, were selected for the final ensemble model. The random forest models had higher stacking coefficients than the neural network models.
+
+The ensemble model was significantly better than the original three models, with an RMSE of 8.05. However, retrieving the ensemble model's RMSE required predicting on the training data, which we used to train the models. This means that the RMSE value is a significant underestimate, and would likely be much higher when predicting on the testing data. In the future, it may be better to create a smaller, additional training dataset to test all models, including those that are not part of an ensemble, to produce more consistent RMSE values. However, using the training data was better than using the testing data, which should only be used to test the final model and not earlier in the predictive modeling process.
+
+## Secondary Model Building & Results
+
+#### Model Types & Recipes
+
+For the second round of model-building, we chose the three models from the initial round that had the lowest RMSE values. These were the random forest, MARS, and ensemble models. We created a new set of folds for these models to prevent overfitting. We again used V-fold cross-validation to randomly split the training data into 5 folds with 3 repetitions. We updated the tuning parameters for each model based on which values performed the best in the initial round.
+
+For the random forest model, we set the number of trees to 500. We tuned the number of predictors to be explored over 4 levels from 5 to 25, and the minimum number of data points to be explored over 4 levels from 2 to 20. We trained 16 random forest models 15 times for a total of 240 trainings.
+
+For the MARS model, we tuned the number of features retained to be explored over 24 levels from 25 to 50, and the highest interaction degree to be explored over 4 levels from 2 to 5. We trained 48 MARS models 15 times, for a total of 720 trainings.
+
+We fit both models to feature engineered recipes that were similar to our initial feature engineered recipes, with a few changes. We added a new predictor, the year in which each album was released, to both recipes. We also added four interaction terms to the recipe for the MARS model. The interaction terms were between danceability & valence, energy & valence, energy and acousticness, and energy & instrumentalness. Each pair of predictors had \|correlation\| \> 0.3 (the correlations of all numeric predictors can be found in [Correlations of Numeric Variables]). We didn't add these interaction terms to the recipe for the random forest model because it is a tree-based model. We didn't engage in any variable selection because we'd already had to remove many of our predictors due to missingness.
+
+The ensemble model, our third model, was composed of the 240 random forest and 720 MARS models, for a total of 960 models. 8 of these models - 3 random forest models and 5 MARS, were selected for the final ensemble model. The random forest models had significantly higher stacking coefficients than the MARS models, and the MARS models had a very small effect on the final ensemble model.
+
+#### Secondary Results & Model Analysis
+
+```{r}
+#| label: tbl-rf-2 # label table
+#| tbl-cap: "Best Tuning Parameters for Random Forest Model" # name table
+#| echo: false
+
+rf_best_2 |> kable()
+```
+
+@tbl-rf-2 shows the best tuning parameters for the random forest model. The best model had 2 predictors sampled at each split and a minimum of 11 data points for the tree to be split further.
+
+```{r}
+#| label: tbl-mars-2 # label table
+#| tbl-cap: "Best Tuning Parameters for MARS" # name table
+#| echo: false
+
+mars_best_2 |> kable()
+```
+
+@tbl-mars-2 shows the best tuning parameters for the MARS. The best model had 43 features retained and an interaction degree of 4.
+
+#### Model Comparison
+
+```{r}
+#| label: tbl-comp-2 # label table
+#| tbl-cap: "RMSE of Each Model" # name table
+#| echo: false
+
+refined_model_analysis |>
+  arrange(desc(rmse)) |> 
+  kable()
+```
+
+@tbl-comp-2 ranks each model we produced in our second round of model building based on RMSE. The random forest and MARS models were both better than in the first round of model building. The new random forest model had an RMSE of 16.56, lower than the previous RMSE of 16.64, while the new MARS had an RMSE of 16.99, lower than the previous RMSE of 17.19.
+
+The ensemble model once again had an unexpectedly low RMSE value, 4.99, because we had to predict on the training data. However, as the ensemble model is composed of the best random forest and MARS models, we would expect it to be better than any single model. Thus we decided to use the ensemble model as our final model for testing.
+
+## Final Model Analysis
+
+We used the ensemble model to predict the popularity of each observation in the testing dataset.
+
+```{r}
+#| label: tbl-perf # label table
+#| tbl-cap: "Performance Metrics of Final Model" # name table
+#| echo: false
+
+final_metric |> kable()
+```
+
+As @tbl-perf shows, the final model has an RMSE of 16.35. In other words, the predicted popularity differed from the actual popularity by an average of 16.35 units.
+
+The final model also has a mean absolute error (MAE) of 13.32 and a R-squared value of 0.20. MAE, like RMSE, also measures the difference between predicted and actual popularity, although with a slightly different formula. A value closer to 0 is better. It suggests that the predicted popularity differed from the actual popularity by an average of 13.32 units. The R-squared value shows the proportion of variation of the dependent variable that can be predicted from the independent variable. This value is between 0 and 1, and the closer it is to 1, the better the model. Our R-squared of 0.20 suggests that this model wasn't particularly good.
+
+We also plotted the actual values versus the predicted values to illustrate the accuracy of our predictions.
+
+```{r}
+#| label: tbl-plot
+#| tbl-cap: "Predicted vs. Actual Popularity"
+#| echo: false
+
+predictions_popularity |>
+  ggplot(aes(x = popularity,
+             y = .pred)) +
+  geom_point(color = "purple4",
+             alpha = 0.1) +
+  labs(title = "Predicted vs. Actual Popularity",
+       x = "Popularity",
+       y = "Predicted Popularity") +
+  geom_abline(intercept = 0, slope = 1) +
+  xlim(0, 100) +
+  ylim(0, 100)
+```
+
+@tbl-plot provides more context for our performance metrics. It shows that our model was not incredibly accurate. Many of the predictions are far from the actual popularity. Predicted popularity and actual popularity don't seem to have a strong correlation. Overall, despite being our best-performing model during our model-building, the ensemble model we built isn't very good at predicting popularity.
+
+The effort of building a predictive model might not necessarily pay off in this case, as even though the ensemble model had the lowest RMSE, it still wasn't able to generate very good predictions, and predictions generated by the other model types likely wouldn't be much worse.
+
+## Conclusion
+
+Overall, this model is not very effective and does not predict popularity very accurately. This is likely due to the composition of the dataset rather than our model selection, feature engineering, and tuning being ineffective. Popularity didn't have \|correlation\| \> 0.12 with any of the numeric predictors (shown in [Correlations of Numeric Variables]). Since none of these variables had a strong relationship with popularity, they weren't particularly good predictors and made it difficult to create an accurate model. In addition, the only categorical predictor we were able to use, artists, had so many levels that we had to combine most of them into an "other" category. As the artist or artists of an album have a huge impact on that album's popularity, not being able to fully use this important predictor made it much more difficult to create an effective model.
+
+There are several next steps that could be taken to improve model quality. The predictors indicating the names of the second and third tracks on the album, which we were unable to include in our model due to missingness, could be re-added to the dataset as Boolean variables indicating the presence or absence of additional tracks. Additionally, artists could be explored and reworked in such a way that would make it more useful and preserve more unique artist names. Finally, gathering additional data about the albums from another source could significantly improve the model, as the information provided by this dataset is limited.
+
+## Appendix: List of Variables
+
+This is a complete list of the 43 predictor variables, 19 of which we used to build our models. The variables' descriptions are abbreviated when referenced in the report for increased clarity.
+
+**Categorical Variables:**
+
+-   `name`: name of the album (removed)
+
+-   `artists`: all of the artists on the album
+
+-   `t_name0`, `t_name1`, `t_name2`: name of the track (removed)
+
+**Datetime Variable:**
+
+-   `release_date`: release date of the album
+
+**Numerical Variables:**
+
+All variables ending in `1` or `2`, representing the second or third tracks on the album, were removed due to missingness.
+
+-   `total_tracks`: number of tracks on the album
+
+-   `t_dur0`, `t_dur1`, `t_dur2`: duration of the track (ms)
+
+-   `t_dance0`, `t_dance1`, `t_dance2` danceability/suitability of the track for dancing; ranges from 0 (least danceable) to 1 (most danceable)
+
+-   `t_energy0`, `t_energy1`, `t_energy2`: energy/measure of intensity and activity; ranges from 0 (least intense) to 1 (most intense)
+
+-   `t_key0`, `t_key1`, `t_key2`: key the track is in; matched to pitches using standard pitch; ranges from 0 to 11
+
+-   `t_mode0`, `t_mode1`, `t_mode2`: modality of the track, the type of scale from which its melodic content is derived; 1 indicates a major track and 0 indicates a minor track
+
+-   `t_speech0`, `t_speech1`, `t_speech2`: speechiness/presence of spoken words in the track; ranges from 0 to 1 with 0-0.33 (non speech-like), 0.33-0.66 (music & speech, such as rap), and 0.66-1.0 (fully speech)
+
+-   `t_acous0`, `t_acous1`, `t_acous2`: acousticness/confidence measure of whether the track is acoustic; ranges from 0 (low confidence) to 1 (high confidence)
+
+-   `t_ins0`, `t_ins1`, `t_ins2`: instrumentalness/confidence measure of whether the track contains no vocals; ranges from 0 (low confidence) to 1 (high confidence)
+
+-   `t_live0`, `t_live1`, `t_live2`: liveness/probability that the track was performed for a live audience; ranges from 0 (low probability) to 1 (high probability)
+
+-   `t_val0`, `t_val1`, `t_val2`: valence/musical positiveness conveyed by the track; ranges from 0 (very negative-sounding) to 1 (very positive-sounding)
+
+-   `t_tempo0`, `t_tempo1`, `t_tempo2`: estimated tempo of the track (BPM)
+
+-   `t_sig0`, `t_sig1`, `t_sig2`: estimated overall time signature of the track/how many beats are in each bar
+
+## Appendix: Missingness
+
+```{r}
+#| label: tbl-miss # label table
+#| tbl-cap: "Missingness in Album Dataset" # name table
+#| echo: false
+
+song_train |> 
+  miss_var_summary() |>
+  kable()
+```
+
+## Appendix: EDA
+
+We excluded the distributions of variables that we removed due to missingness as well as the datetime variable release date.
+
+#### Distributions of Categorical Variable
+
+```{r}
+#| echo: false
+
+artist_distrib |>
+  ggplot(aes(x = artists)) +
+  geom_bar(fill = "pink3") +
+  labs(title = "Distribution of Artists",
+       x = "Artists",
+       y = "")
+
+album_counts |>
+  ggplot(aes(x = albums_per_artist)) +
+  geom_histogram(fill = "pink3") +
+  labs(title = "Number of Albums Per Artist",
+       x = "# of Albums",
+       y = "")
+```
+
+The vast majority of artists had only one album, resulting in a large number of unique artists.
+
+#### Distributions of Numeric Variables
+
+We found that these four variables didn't need to be transformed:
+
+```{r}
+#| echo: false
+#| warning: false
+
+song_train |>
+  ggplot(aes(x = t_dance0)) +
+  geom_density(color = "magenta4") +
+  labs(title = "Distribution of Danceability",
+       x = "Danceability",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_energy0)) +
+  geom_density(color = "magenta4") +
+  labs(title = "Distribution of Energy",
+       x = "Energy",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_mode0)) +
+  geom_histogram(fill = "magenta4") +
+  labs(title = "Distribution of Modality",
+       x = "Modality",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_sig0)) +
+  geom_histogram(fill = "magenta4") +
+  labs(title = "Distribution of Time Signature",
+       x = "Time Signature",
+       y = "")
+```
+
+We found log10-transformations of these three variables to be beneficial:
+
+```{r}
+#| echo: false
+#| warning: false
+
+song_train |>
+  ggplot(aes(x = total_tracks)) +
+  geom_density(color = "purple4") +
+  labs(title = "Distribution of Number of Tracks",
+       x = "# of Tracks",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_dur0)) +
+  geom_density(color = "purple4") +
+    labs(title = "Distribution of Duration",
+       x = "Duration (ms)",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_speech0)) +
+  geom_density(color = "purple4") +
+    labs(title = "Distribution of Speechiness",
+       x = "Speechiness",
+       y = "")
+```
+
+We found Yeo-Johnson transformations of these three variables to be beneficial:
+
+```{r}
+#| echo: false
+#| warning: false
+
+song_train |>
+  ggplot(aes(x = t_acous0)) +
+  geom_density(color = "blue4") +
+    labs(title = "Distribution of Acousticness",
+       x = "Acousticness",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_ins0)) +
+  geom_density(color = "blue4") +
+    labs(title = "Distribution of Instrumentalness",
+       x = "Instrumentalness",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_val0)) +
+  geom_density(color = "blue4") +
+    labs(title = "Distribution of Valence",
+       x = "Valence",
+       y = "")
+```
+
+We found natural spline transformations of these two variables to be beneficial:
+
+```{r}
+#| echo: false
+#| warning: false
+
+song_train |>
+  ggplot(aes(x = t_key0)) +
+  geom_density(color = "skyblue4") +
+    labs(title = "Distribution of Key",
+       x = "Key",
+       y = "")
+
+song_train |>
+  ggplot(aes(x = t_tempo0)) +
+  geom_density(color = "skyblue4") +
+    labs(title = "Distribution of Tempo",
+       x = "Tempo",
+       y = "")
+```
+
+We found both a log 10 transformation and a natural spline transformation of this variable to be beneficial:
+
+```{r}
+song_train |>
+  ggplot(aes(x = t_live0)) +
+  geom_density(color = "turquoise4") +
+    labs(title = "Distribution of Liveness",
+       x = "Liveness",
+       y = "")
+```
+
+#### Correlations of Numeric Variables
+
+```{r}
+#| label: tbl-cor
+#| tbl-cap: "Correlation Between Numeric Predictor Variables"
+#| echo: false
+
+cor_table |> kable()
+```
+
+@tbl-cor shows the correlation between each of the numeric predictors. Most predictors were not highly correlated. We created interaction terms between pairs of predictors with \|correlation\| \> 0.3 in our second feature-engineered recipe.
